@@ -85,6 +85,7 @@ def boundaries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespa
     adapter.rewrite_hooks.side_effect = lambda content, agent_id: content
     adapter.rewrite_agent_profile.side_effect = lambda content, agent_id: content
     adapter.allow_home_agent_profile.return_value = False
+    adapter.reports_sessions_outside_pull.return_value = False
 
     def apply_install_options(options: dict, tools: str | None) -> None:
         if tools:
@@ -341,6 +342,7 @@ def test_write_profile_pins_block_hook_and_preserves_body(monkeypatch: pytest.Mo
     )
     adapter = MagicMock()
     adapter.allow_home_agent_profile.return_value = False
+    adapter.reports_sessions_outside_pull.return_value = False
 
     written, failed = cmd_pull.write_install_snippet(
         {"agent_profile": {"path": "agent.md", "content": profile}},
@@ -408,6 +410,7 @@ def test_write_codex_profile_preserves_quoted_instructions(monkeypatch: pytest.M
     content = "developer_instructions = " + json.dumps(instruction) + "\n"
     adapter = MagicMock()
     adapter.allow_home_agent_profile.return_value = False
+    adapter.reports_sessions_outside_pull.return_value = False
     cmd_pull.write_install_snippet(
         {"agent_profile": {"path": "agent.toml", "content": content}},
         harness="codex",
@@ -1902,6 +1905,30 @@ def test_earlier_mcp_write_failure_still_reports_existing_session_hooks(
     human = _invoke(pull_app, project("human-project"))
     assert human.exit_code != 0
     assert "Telemetry:" in human.output
+
+
+def test_failed_pull_reports_sessions_from_adapter_telemetry_outside_pull(
+    pull_app_boundary: typer.Typer,
+    boundaries: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An extension that reports sessions stays active even when the pull fails before writing."""
+    target = tmp_path / "project"
+    target.mkdir()
+    boundaries.adapter.reports_sessions_outside_pull.return_value = True
+    boundaries.post.return_value = {
+        "config_snippet": {"mcp_config": {"path": "mcp.json", "content": {"mcpServers": {}}}}
+    }
+
+    def fail_write(path: Path, content: str) -> None:
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(cmd_pull, "_atomic_write_text", fail_write)
+
+    result = _invoke(pull_app_boundary, target, "--output", "json")
+    assert result.exit_code == 9
+    assert json.loads(result.stderr)["error"]["result"]["reports_sessions"] is True
 
 
 @pytest.mark.parametrize("existing_hook", [True, False])
